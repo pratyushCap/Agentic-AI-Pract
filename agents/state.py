@@ -1,0 +1,23 @@
+from typing import Any, Dict, List, Literal, Optional, TypedDict
+
+
+AgentStatus = Literal["running", "completed", "needs_clarification", "approval_required", "failed"]
+
+
+class AgentState(TypedDict, total=False):
+    request: str
+    source: Any
+    goal: str
+    plan: List[str]
+    current_step: str
+    observations: List[Dict[str, Any]]
+    tool_results: Dict[str, Any]
+    findings: List[str]
+    recommendation: Optional[str]
+    approval_required: bool
+    approval_status: str
+    clarification: Optional[str]
+    errors: List[str]
+    step_count: int
+    max_steps: int
+    status: AgentStatus

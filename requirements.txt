@@ -1,0 +1,31 @@
+websockets
+requests
+python-dotenv
+asyncio
+openai
+# requirements.txt
+# Core dependencies (based on your setup)
+python-dotenv==1.0.0
+openai==1.3.0
+
+# LangChain & LangGraph for agent orchestration
+langchain==0.1.10
+langchain-community==0.0.10
+langgraph==0.0.31
+
+# Data processing
+# pandas and numpy are not required for the initial workflow implementation
+
+# Database (optional, for data engineer agent)
+sqlalchemy==2.0.23
+psycopg2-binary==2.9.9
+
+# FastAPI + WebSocket (for async and real-time)
+fastapi==0.104.1
+uvicorn==0.24.0
+websockets==12.0
+
+# Utilities
+pydantic==2.5.0
+python-multipart==0.0.6
+loguru==0.7.2

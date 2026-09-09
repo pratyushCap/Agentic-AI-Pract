@@ -1,0 +1,19 @@
+.env
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.continue/
+
+# Local and generated data files
+data/*
+!data/.gitkeep
+!data/sample_finance_data.csv
+test_results.txt
+
+# Logs and local tooling state
+*.log
+.coverage
+htmlcov/
