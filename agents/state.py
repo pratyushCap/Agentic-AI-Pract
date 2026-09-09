@@ -14,6 +14,9 @@ class AgentState(TypedDict, total=False):
     tool_results: Dict[str, Any]
     findings: List[str]
     recommendation: Optional[str]
+    response: Optional[str]
+    intent: str
+    intent_checked: bool
     approval_required: bool
     approval_status: str
     clarification: Optional[str]

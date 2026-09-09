@@ -35,6 +35,9 @@ class FinanceAgentGraph:
             "tool_results": {},
             "findings": [],
             "recommendation": None,
+            "response": None,
+            "intent": "",
+            "intent_checked": False,
             "approval_required": False,
             "approval_status": "not_required",
             "clarification": None,
@@ -63,6 +66,7 @@ class FinanceAgentGraph:
             self._route_decision,
             {
                 "tool_call": "execute_tool",
+                "response": "finish",
                 "recommendation": "finish",
                 "clarification": "finish",
                 "approval_request": "finish",
@@ -132,6 +136,9 @@ class FinanceAgentGraph:
         elif decision == "recommendation":
             state["recommendation"] = message
             state["findings"].append(message)
+            state["status"] = "completed"
+        elif decision == "response":
+            state["response"] = message
             state["status"] = "completed"
         record_event(state["audit_events"], "agent_finished", status=state["status"])
         return state

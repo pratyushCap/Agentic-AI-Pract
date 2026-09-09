@@ -20,8 +20,10 @@ class DomainAnalysisTools:
             "average_risk_score": risk["mean"],
             "missing_values": profile.get("statistics", {}).get("missing_values", {}),
             "recommendation": (
-                f"Average transaction amount is {amount['mean']:.2f} and average risk score is {risk['mean']:.2f}. "
-                "Investigate high-risk transactions before taking action."
+                "Evidence: average transaction amount is "
+                f"{amount['mean']:,.2f}; average risk score is {risk['mean']:.2f}.\n"
+                "Interpretation: transaction risk should be monitored against the organization’s policy threshold.\n"
+                "Recommended action: investigate high-risk transactions and resolve missing values before taking action."
             ),
         }
 
@@ -43,7 +45,12 @@ class DomainAnalysisTools:
             "average_expenses": expenses,
             "profit_margin": round(profit / revenue * 100, 2),
             "expense_ratio": round(expenses / revenue * 100, 2),
-            "recommendation": "Review profit margin and expense ratio before approving new investments or cost changes.",
+            "recommendation": (
+                f"Evidence: average revenue is ${revenue:,.2f}, average profit is ${profit:,.2f}, "
+                f"profit margin is {profit / revenue * 100:.2f}%, and expense ratio is {expenses / revenue * 100:.2f}%.\n"
+                "Interpretation: the business is profitable, but expenses consume a significant share of revenue.\n"
+                "Recommended action: review major cost drivers before approving new investments or cost changes."
+            ),
         }
 
     @staticmethod
@@ -64,5 +71,9 @@ class DomainAnalysisTools:
             "status": "success",
             "average_exposure": exposures,
             "largest_exposure": largest_asset,
-            "recommendation": f"The largest average portfolio exposure is {largest_asset}. Review concentration and volatility before rebalancing.",
+            "recommendation": (
+                f"Evidence: average exposure is {', '.join(f'{asset} {value:.1f}%' for asset, value in exposures.items())}.\n"
+                f"Interpretation: {largest_asset} has the largest average portfolio exposure.\n"
+                "Recommended action: review concentration and volatility before rebalancing."
+            ),
         }

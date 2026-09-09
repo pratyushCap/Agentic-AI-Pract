@@ -6,6 +6,7 @@ from agents.graph import FinanceAgentGraph
 from tools.data_tools import DataAnalysisTools
 from tools.sql_tools import DataEngineeringTools
 from tools.permissions import ToolPermission, ensure_tool_allowed
+from unittest.mock import patch
 
 
 class FinanceAgentLoopTests(unittest.TestCase):
@@ -27,7 +28,8 @@ class FinanceAgentLoopTests(unittest.TestCase):
         self.assertIn("profile_dataset", state["tool_results"])
         self.assertIn("analyze_transactions", state["tool_results"])
         self.assertIsNone(state["tool_results"]["load_dataset"]["records"])
-        self.assertIn("Average transaction amount", state["recommendation"])
+        self.assertIn("evidence:", state["recommendation"].lower())
+        self.assertIn("recommended action:", state["recommendation"].lower())
 
     def test_streaming_loader_keeps_full_profile_but_not_records(self):
         source = self._source(
@@ -49,6 +51,41 @@ class FinanceAgentLoopTests(unittest.TestCase):
 
         self.assertEqual(state["status"], "needs_clarification")
         self.assertIn("which csv", state["clarification"].lower())
+
+    def test_agent_answers_greeting_without_loading_data(self):
+        state = FinanceAgentGraph().run("hello", "data/sample_finance_data.csv")
+
+        self.assertEqual(state["status"], "completed")
+        self.assertEqual(state["step_count"], 1)
+        self.assertIn("Hello", state["response"])
+        self.assertEqual(state["tool_results"], {})
+
+    def test_agent_answers_general_llm_question_without_loading_data(self):
+        state = FinanceAgentGraph().run("what is llm ?", "data/sample_finance_data.csv")
+
+        self.assertEqual(state["status"], "completed")
+        self.assertEqual(state["step_count"], 1)
+        self.assertIn("large language model", state["response"].lower())
+        self.assertEqual(state["tool_results"], {})
+
+    @patch(
+        "agents.planner_agent.llm_client.chat",
+        side_effect=[
+            "INTENT: GENERAL",
+            "A balanced diet should be personalized to your age, health, activity, and goals. Consult a qualified professional for medical needs.",
+        ],
+    )
+    def test_agent_uses_llm_for_general_question(self, mock_chat):
+        state = FinanceAgentGraph().run(
+            "What is a perfect diet, and can you plan one for my body type?",
+            "data/sample_finance_data.csv",
+        )
+
+        self.assertEqual(state["status"], "completed")
+        self.assertEqual(state["intent"], "general")
+        self.assertIn("balanced diet", state["response"])
+        self.assertEqual(state["tool_results"], {})
+        self.assertEqual(mock_chat.call_count, 2)
 
     def test_agent_requests_approval_for_sensitive_action(self):
         source = self._source("transaction_amount,risk_score\n100,0.2\n")
@@ -87,7 +124,9 @@ class FinanceAgentLoopTests(unittest.TestCase):
 
         self.assertEqual(state["status"], "completed")
         self.assertIn("analyze_finance", state["tool_results"])
-        self.assertIn("profit margin", state["tool_results"]["analyze_finance"]["recommendation"].lower())
+        recommendation = state["tool_results"]["analyze_finance"]["recommendation"].lower()
+        self.assertIn("profit margin is 20.00%", recommendation)
+        self.assertIn("recommended action", recommendation)
 
     def test_agent_selects_portfolio_adapter(self):
         source = self._source(
@@ -100,7 +139,8 @@ class FinanceAgentLoopTests(unittest.TestCase):
 
         self.assertEqual(state["status"], "completed")
         self.assertIn("analyze_portfolio", state["tool_results"])
-        self.assertIn("largest average portfolio exposure", state["recommendation"].lower())
+        self.assertIn("evidence:", state["recommendation"].lower())
+        self.assertIn("recommended action:", state["recommendation"].lower())
 
     def test_agent_records_execution_trace_without_tool_arguments(self):
         source = self._source("transaction_amount,risk_score\n100,0.2\n")

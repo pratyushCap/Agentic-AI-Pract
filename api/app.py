@@ -40,6 +40,7 @@ class WorkflowResponse(BaseModel):
     status: str
     step_count: int
     max_steps: int
+    response: Optional[str] = None
     recommendation: Optional[str] = None
     clarification: Optional[str] = None
     approval_required: bool = False

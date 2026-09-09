@@ -5,7 +5,7 @@ from agents.orchestrator import FinanceWorkflowOrchestrator
 
 
 def print_help() -> None:
-    print("Finance Workflow Planner CLI")
+    print("Finance Agent CLI")
     print("Examples:")
     print("  - Evaluate a new investment opportunity")
     print("  - Analyze the latest revenue forecast and recommend action")
@@ -49,10 +49,13 @@ def main() -> None:
             print(f"Steps used: {result['step_count']}/{result['max_steps']}")
             if result.get("clarification"):
                 print(f"Clarification needed: {result['clarification']}")
+            elif result.get("response"):
+                print(f"Response: {result['response']}")
             elif result.get("approval_required"):
                 print(f"Approval required: {result['recommendation']}")
             elif result.get("recommendation"):
-                print(f"Recommendation: {result['recommendation']}")
+                print("Recommendation:")
+                print(result["recommendation"])
             if result.get("errors"):
                 print(f"Agent errors: {'; '.join(result['errors'])}")
         elif result["route"] == "generic":
