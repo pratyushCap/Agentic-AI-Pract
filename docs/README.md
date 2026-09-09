@@ -1,7 +1,7 @@
 # Finance Workflow Planner
 
-This prototype is a multi-agent finance and investment workflow planner.
-It uses LangGraph-style orchestration with specialist assistants for finance, data, data engineering, and review.
+This prototype is a finance and investment agent.
+Its primary CLI path uses a bounded LangGraph StateGraph with specialist tools for data loading, profiling, domain analysis, review, and recommendations. Each run produces a structured execution trace.
 
 ## Getting started
 
@@ -35,3 +35,5 @@ It uses LangGraph-style orchestration with specialist assistants for finance, da
 - `Data Analyst` — analyzes trends, summarizes datasets, and surfaces actionable insights
 - `Data Engineering` — prepares data, validates datasets, and executes SQL queries
 - `Reviewer` — audits recommendations, checks risk, and ensures governance compliance
+
+The legacy fixed workflow remains available with `python run_agent.py --workflow`. The default `python run_agent.py` command runs the stateful Finance Agent.

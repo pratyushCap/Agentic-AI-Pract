@@ -3,6 +3,7 @@ from typing import Any, Callable, Dict
 
 from tools.permissions import ToolPermission, ensure_tool_allowed
 from tools.sql_tools import DataEngineeringTools
+from tools.domain_adapters import DomainAnalysisTools
 
 
 @dataclass(frozen=True)
@@ -48,6 +49,24 @@ def create_default_registry() -> ToolRegistry:
         "profile_dataset",
         "Calculate statistics, missing values, correlations, and outliers.",
         DataEngineeringTools.profile_data_source,
+        ToolPermission("read_only"),
+    ))
+    registry.register(RegisteredTool(
+        "analyze_transactions",
+        "Analyze a transaction-domain profile.",
+        DomainAnalysisTools.analyze_transaction_profile,
+        ToolPermission("read_only"),
+    ))
+    registry.register(RegisteredTool(
+        "analyze_finance",
+        "Analyze a revenue, profit, and expenses profile.",
+        DomainAnalysisTools.analyze_finance_profile,
+        ToolPermission("read_only"),
+    ))
+    registry.register(RegisteredTool(
+        "analyze_portfolio",
+        "Analyze a portfolio exposure profile.",
+        DomainAnalysisTools.analyze_portfolio_profile,
         ToolPermission("read_only"),
     ))
     return registry

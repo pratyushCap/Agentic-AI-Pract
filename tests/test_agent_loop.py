@@ -22,9 +22,10 @@ class FinanceAgentLoopTests(unittest.TestCase):
         state = FinanceAgentGraph().run("Assess transaction risk", source)
 
         self.assertEqual(state["status"], "completed")
-        self.assertEqual(state["step_count"], 3)
+        self.assertEqual(state["step_count"], 4)
         self.assertIn("load_dataset", state["tool_results"])
         self.assertIn("profile_dataset", state["tool_results"])
+        self.assertIn("analyze_transactions", state["tool_results"])
         self.assertIsNone(state["tool_results"]["load_dataset"]["records"])
         self.assertIn("Average transaction amount", state["recommendation"])
 
@@ -74,6 +75,45 @@ class FinanceAgentLoopTests(unittest.TestCase):
         self.assertEqual(profile["domain"], "transactions")
         self.assertEqual(profile["statistics"]["summary"]["risk_score"]["count"], 2)
         self.assertEqual(profile["correlation"]["correlation"]["transaction_amount"]["risk_score"], 1.0)
+
+    def test_agent_selects_finance_adapter(self):
+        source = self._source(
+            "revenue,profit,expenses\n"
+            "1000,200,700\n"
+            "1200,240,800\n"
+        )
+
+        state = FinanceAgentGraph().run("Review business profitability", source)
+
+        self.assertEqual(state["status"], "completed")
+        self.assertIn("analyze_finance", state["tool_results"])
+        self.assertIn("profit margin", state["tool_results"]["analyze_finance"]["recommendation"].lower())
+
+    def test_agent_selects_portfolio_adapter(self):
+        source = self._source(
+            "equities,bonds,cash\n"
+            "60,25,15\n"
+            "70,20,10\n"
+        )
+
+        state = FinanceAgentGraph().run("Review portfolio concentration", source)
+
+        self.assertEqual(state["status"], "completed")
+        self.assertIn("analyze_portfolio", state["tool_results"])
+        self.assertIn("largest average portfolio exposure", state["recommendation"].lower())
+
+    def test_agent_records_execution_trace_without_tool_arguments(self):
+        source = self._source("transaction_amount,risk_score\n100,0.2\n")
+
+        state = FinanceAgentGraph().run("Assess transaction risk", source)
+
+        event_types = [event["event_type"] for event in state["audit_events"]]
+        self.assertEqual(event_types[0], "agent_started")
+        self.assertIn("decision_made", event_types)
+        self.assertIn("tool_started", event_types)
+        self.assertIn("tool_completed", event_types)
+        self.assertEqual(event_types[-1], "agent_finished")
+        self.assertTrue(all("arguments" not in event for event in state["audit_events"]))
 
 
 if __name__ == "__main__":

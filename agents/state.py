@@ -18,6 +18,11 @@ class AgentState(TypedDict, total=False):
     approval_status: str
     clarification: Optional[str]
     errors: List[str]
+    audit_events: List[Dict[str, Any]]
+    pending_decision: str
+    pending_message: str
+    pending_tool: str
+    pending_arguments: Dict[str, Any]
     step_count: int
     max_steps: int
     status: AgentStatus
