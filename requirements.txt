@@ -19,6 +19,7 @@ langgraph==0.0.31
 # Database (optional, for data engineer agent)
 sqlalchemy==2.0.23
 psycopg2-binary==2.9.9
+duckdb==1.5.5
 
 # FastAPI + WebSocket (for async and real-time)
 fastapi==0.104.1

@@ -4,6 +4,7 @@ from typing import Any, Callable, Dict
 from tools.permissions import ToolPermission, ensure_tool_allowed
 from tools.sql_tools import DataEngineeringTools
 from tools.domain_adapters import DomainAnalysisTools
+from tools.generic_query import GenericQueryTools
 
 
 @dataclass(frozen=True)
@@ -48,7 +49,7 @@ def create_default_registry() -> ToolRegistry:
     registry.register(RegisteredTool(
         "profile_dataset",
         "Calculate statistics, missing values, correlations, and outliers.",
-        DataEngineeringTools.profile_data_source,
+        DataEngineeringTools.catalog_sources,
         ToolPermission("read_only"),
     ))
     registry.register(RegisteredTool(
@@ -67,6 +68,12 @@ def create_default_registry() -> ToolRegistry:
         "analyze_portfolio",
         "Analyze a portfolio exposure profile.",
         DomainAnalysisTools.analyze_portfolio_profile,
+        ToolPermission("read_only"),
+    ))
+    registry.register(RegisteredTool(
+        "query_data",
+        "Execute a validated, bounded, read-only analysis plan.",
+        GenericQueryTools.execute_plan,
         ToolPermission("read_only"),
     ))
     return registry

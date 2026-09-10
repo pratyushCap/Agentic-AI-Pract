@@ -119,6 +119,7 @@ class FinanceAgentGraph:
             state["errors"].append(str(exc))
             state["status"] = "failed"
             state["pending_decision"] = "failed"
+            state["pending_message"] = f"Tool '{tool_name}' failed: {exc}"
             record_event(state["audit_events"], "tool_failed", tool=tool_name, error=str(exc))
         return state
 

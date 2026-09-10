@@ -170,6 +170,94 @@ Supports:
             raise ToolExecutionError(f"Data source profiling failed: {str(e)}")
 
     @staticmethod
+    def catalog_sources(source: Union[str, List[str]]) -> Dict[str, Any]:
+        """Profile each input file independently and discover likely table relationships."""
+        try:
+            file_paths = DataEngineeringTools._resolve_input_sources(source)
+            if not file_paths:
+                raise ValueError("No supported .csv or .json files found.")
+
+            tables = []
+            value_samples = {}
+            for file_path in file_paths:
+                profile = DataEngineeringTools.profile_data_source(str(file_path))
+                table_name = file_path.stem.lower().replace(" ", "_")
+                columns = profile["columns"]
+                identifier_columns = [column for column in columns if column.endswith("_id") or column == "id"]
+                tables.append({
+                    "table_name": table_name,
+                    "source": str(file_path),
+                    "rows": profile["rows"],
+                    "columns": columns,
+                    "numeric_columns": profile["numeric_columns"],
+                    "domain": DataEngineeringTools._detect_table_domain(table_name, columns),
+                    "identifier_candidates": identifier_columns,
+                    "missing_values": profile["statistics"]["missing_values"],
+                    "preview": profile["preview"],
+                })
+                for column in identifier_columns:
+                    values = {
+                        row.get(column) for row in profile["preview"]
+                        if row.get(column) not in (None, "", "NaN")
+                    }
+                    value_samples[(table_name, column)] = values
+
+            relationships = []
+            for (left_table, left_column), left_values in value_samples.items():
+                if not left_values:
+                    continue
+                for (right_table, right_column), right_values in value_samples.items():
+                    if left_table >= right_table or left_table == right_table:
+                        continue
+                    overlap = left_values & right_values
+                    same_identifier = left_column == right_column
+                    if overlap or same_identifier:
+                        relationships.append({
+                            "left_table": left_table,
+                            "left_column": left_column,
+                            "right_table": right_table,
+                            "right_column": right_column,
+                            "sample_overlap": len(overlap),
+                            "confidence": "confirmed_by_sample" if overlap else "candidate_by_column_name",
+                        })
+
+            domains = {table["domain"] for table in tables}
+            dataset_domain = "ecommerce" if "ecommerce" in domains else (
+                next(iter(domains)) if len(domains) == 1 else "mixed"
+            )
+            catalog = {
+                "status": "success",
+                "dataset_domain": dataset_domain,
+                "file_count": len(tables),
+                "rows": sum(table["rows"] for table in tables),
+                "tables": tables,
+                "relationships": relationships,
+            }
+            if len(file_paths) == 1:
+                single_profile = DataEngineeringTools.profile_data_source(str(file_paths[0]))
+                catalog.update({
+                    "domain": single_profile["domain"],
+                    "columns": single_profile["columns"],
+                    "numeric_columns": single_profile["numeric_columns"],
+                    "statistics": single_profile["statistics"],
+                    "correlation": single_profile["correlation"],
+                })
+            return catalog
+        except Exception as e:
+            raise ToolExecutionError(f"Source cataloging failed: {str(e)}")
+
+    @staticmethod
+    def _detect_table_domain(table_name: str, columns: List[str]) -> str:
+        normalized = set(columns)
+        ecommerce_terms = ("order", "product", "customer", "review", "payment", "seller", "category")
+        if any(term in table_name for term in ecommerce_terms) or any(
+            any(term in column for term in ecommerce_terms) for column in columns
+        ):
+            return "ecommerce"
+        from tools.data_tools import DataAnalysisTools
+        return DataAnalysisTools.detect_domain(columns)
+
+    @staticmethod
     def _iter_source_records(file_paths: List[Path]) -> Iterator[Dict[str, Any]]:
         for file_path in file_paths:
             for record in DataEngineeringTools._iter_single_file(file_path):

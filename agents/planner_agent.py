@@ -1,8 +1,10 @@
+import json
 from dataclasses import dataclass
 from typing import Any, Dict, Literal
 
 from agents.state import AgentState
 from llm.llm_config import llm_client
+from tools.generic_query import GenericQueryTools
 
 
 DecisionType = Literal["response", "tool_call", "clarification", "recommendation", "approval_request"]
@@ -68,6 +70,16 @@ class FinancePlannerAgent:
             }
             tool_name = tool_by_domain.get(domain)
             if not tool_name:
+                catalog = results["profile_dataset"]
+                if catalog.get("dataset_domain") in {"ecommerce", "mixed"} or len(catalog.get("tables", [])) > 1:
+                    plan = self._plan_generic_question(state["request"], catalog)
+                    if plan is None:
+                        return AgentDecision("clarification", self._catalog_response(catalog))
+                    return AgentDecision(
+                        "tool_call",
+                        tool_name="query_data",
+                        arguments={"catalog": catalog, "plan": plan},
+                    )
                 return AgentDecision("recommendation", self._recommendation(state))
             return AgentDecision(
                 "tool_call",
@@ -84,6 +96,14 @@ class FinancePlannerAgent:
         profile = state["tool_results"]["profile_dataset"]
         domain_analysis = self._domain_analysis_result(state["tool_results"])
         if domain_analysis:
+            if "query_data" in state["tool_results"]:
+                result = state["tool_results"]["query_data"]
+                rows = result.get("rows", [])[:5]
+                return (
+                    f"Evidence: {json.dumps(rows, default=str)}\n"
+                    f"Interpretation: the analysis used {', '.join(result.get('tables_used', []))} and returned {result.get('row_count', 0)} result rows.\n"
+                    f"Recommended action: {result.get('recommendation', 'Review the result against business targets before acting.')}"
+                )
             return domain_analysis.get("recommendation", "Domain analysis completed without a recommendation.")
         columns = set(profile.get("columns", []))
         if {"revenue", "profit", "expenses"}.issubset(columns):
@@ -100,8 +120,81 @@ class FinancePlannerAgent:
             )
         return "The data was profiled successfully, but it does not contain enough recognized finance fields for a specific recommendation."
 
+    def _catalog_response(self, catalog: Dict[str, Any]) -> str:
+        tables = catalog.get("tables", [])
+        names = ", ".join(table["table_name"] for table in tables[:8])
+        relationships = catalog.get("relationships", [])
+        relationship_text = ", ".join(
+            f"{item['left_table']}.{item['left_column']} -> {item['right_table']}.{item['right_column']}"
+            for item in relationships[:6]
+        ) or "No relationships were confirmed from the sample."
+        return (
+            f"I found {catalog.get('file_count', 0)} related data files containing {catalog.get('rows', 0):,} records.\n"
+            f"Detected tables: {names}.\n"
+            f"Detected relationships: {relationship_text}\n"
+            "This appears to be general or e-commerce data rather than a single finance dataset. "
+            "Tell me whether you want sales, customers, products, payments, delivery, reviews, trends, or data-quality analysis."
+        )
+
+    def _plan_generic_question(self, request: str, catalog: Dict[str, Any]) -> Dict[str, Any] | None:
+        """Ask the LLM for a JSON plan, then validate it deterministically."""
+        try:
+            response = llm_client.chat(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "Convert the user's data question into JSON only. Choose task from aggregation, summary, count. "
+                            "Use only table and column names present in the catalog. Return null when the question is ambiguous or unsupported. "
+                            "Schema: {task, metric, group_by, tables, filters}."
+                        ),
+                    },
+                    {"role": "user", "content": json.dumps({"question": request, "catalog": catalog})},
+                ],
+                temperature=0.0,
+                max_tokens=500,
+            )
+            if not isinstance(response, str):
+                return self._fallback_generic_plan(request, catalog)
+            parsed = json.loads(response.strip().replace("```json", "").replace("```", "").strip())
+            if parsed is None:
+                return self._fallback_generic_plan(request, catalog)
+            return GenericQueryTools.validate_plan(catalog, parsed, 100)
+        except Exception:
+            pass
+        return self._fallback_generic_plan(request, catalog)
+
+    def _fallback_generic_plan(self, request: str, catalog: Dict[str, Any]) -> Dict[str, Any] | None:
+        """Handle common explicit goals when the model cannot produce a valid plan."""
+        normalized = request.lower()
+        tables = catalog.get("tables", [])
+        by_name = {table["table_name"]: table for table in tables}
+
+        if "data quality" in normalized or "data-quality" in normalized or "quality" in normalized:
+            return GenericQueryTools.validate_plan(catalog, {"task": "data_quality", "tables": list(by_name)}, 100)
+
+        orders = next((table for table in tables if "order_purchase_timestamp" in table.get("columns", [])), None)
+        if "trend" in normalized or "trends" in normalized:
+            if orders:
+                metric_table = next((table for table in tables if "payment_value" in table.get("columns", [])), None)
+                plan = {"task": "trend", "date_column": "order_purchase_timestamp", "tables": [orders["table_name"]]}
+                if metric_table:
+                    plan["metric"] = "payment_value"
+                    plan["tables"].append(metric_table["table_name"])
+                return GenericQueryTools.validate_plan(catalog, plan, 100)
+
+        if "customer" in normalized or "customers" in normalized:
+            customer_table = next((table for table in tables if "customer_state" in table.get("columns", [])), None)
+            if customer_table:
+                return GenericQueryTools.validate_plan(
+                    catalog,
+                    {"task": "count", "group_by": "customer_state", "tables": [customer_table["table_name"]]},
+                    100,
+                )
+        return None
+
     def _domain_analysis_result(self, results: Dict[str, Any]) -> Dict[str, Any] | None:
-        for tool_name in ("analyze_transactions", "analyze_finance", "analyze_portfolio"):
+        for tool_name in ("analyze_transactions", "analyze_finance", "analyze_portfolio", "query_data"):
             if tool_name in results:
                 return results[tool_name]
         return None

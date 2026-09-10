@@ -6,6 +6,8 @@ from agents.graph import FinanceAgentGraph
 from tools.data_tools import DataAnalysisTools
 from tools.sql_tools import DataEngineeringTools
 from tools.permissions import ToolPermission, ensure_tool_allowed
+from tools.generic_query import AnalysisPlanError, GenericQueryTools
+from unittest.mock import patch
 from unittest.mock import patch
 
 
@@ -45,6 +47,95 @@ class FinanceAgentLoopTests(unittest.TestCase):
         self.assertIsNone(loaded["records"])
         self.assertEqual(profile["statistics"]["summary"]["transaction_amount"]["count"], 1000)
         self.assertEqual(profile["statistics"]["summary"]["risk_score"]["count"], 1000)
+
+    def test_multi_file_catalog_keeps_tables_and_relationships_separate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            customers = os.path.join(directory, "customers.csv")
+            orders = os.path.join(directory, "orders.csv")
+            with open(customers, "w", encoding="utf-8") as handle:
+                handle.write("customer_id,customer_state\nC1,SP\nC2,RJ\n")
+            with open(orders, "w", encoding="utf-8") as handle:
+                handle.write("order_id,customer_id,payment_value\nO1,C1,100\nO2,C2,200\n")
+
+            catalog = DataEngineeringTools.catalog_sources(directory)
+
+            self.assertEqual(catalog["file_count"], 2)
+            self.assertEqual({table["table_name"] for table in catalog["tables"]}, {"customers", "orders"})
+            self.assertTrue(any(item["left_column"] == "customer_id" and item["right_column"] == "customer_id" for item in catalog["relationships"]))
+
+    def test_multi_file_ecommerce_request_asks_for_analysis_goal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with open(os.path.join(directory, "orders.csv"), "w", encoding="utf-8") as handle:
+                handle.write("order_id,customer_id,payment_value\nO1,C1,100\n")
+            with open(os.path.join(directory, "customers.csv"), "w", encoding="utf-8") as handle:
+                handle.write("customer_id,customer_state\nC1,SP\n")
+
+            state = FinanceAgentGraph().run("analyze this data", directory)
+
+            self.assertEqual(state["status"], "needs_clarification")
+            self.assertIn("sales", state["clarification"].lower())
+            self.assertEqual(state["tool_results"]["load_dataset"]["records"], None)
+
+    def test_explicit_generic_goals_execute_without_repeating_clarification(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with open(os.path.join(directory, "customers.csv"), "w", encoding="utf-8") as handle:
+                handle.write("customer_id,customer_state\nC1,SP\nC2,RJ\n")
+            with open(os.path.join(directory, "orders.csv"), "w", encoding="utf-8") as handle:
+                handle.write("order_id,customer_id,order_purchase_timestamp\nO1,C1,2018-01-10\nO2,C2,2018-02-10\n")
+
+            with patch("agents.planner_agent.llm_client.chat", return_value="null"):
+                state = FinanceAgentGraph().run("I want trends and customers analysis", directory)
+
+            self.assertEqual(state["status"], "completed")
+            self.assertIn("query_data", state["tool_results"])
+            self.assertEqual(state["tool_results"]["query_data"]["plan"]["task"], "trend")
+
+    def test_explicit_data_quality_goal_executes(self):
+        source = self._source("customer_id,customer_state\nC1,SP\nC2,\n")
+
+        with patch("agents.planner_agent.llm_client.chat", return_value="null"):
+            state = FinanceAgentGraph().run("data-quality analysis", source)
+
+        self.assertEqual(state["status"], "completed")
+        self.assertEqual(state["tool_results"]["query_data"]["plan"]["task"], "data_quality")
+        self.assertTrue(any(row["missing_count"] for row in state["tool_results"]["query_data"]["rows"]))
+
+    @patch(
+        "agents.planner_agent.llm_client.chat",
+        side_effect=[
+            "INTENT: DATA",
+            '{"task":"aggregation","metric":"payment_value","group_by":"customer_state","tables":["orders","customers"],"filters":[]}',
+        ],
+    )
+    def test_agent_plans_and_executes_generic_join_analysis(self, mock_chat):
+        with tempfile.TemporaryDirectory() as directory:
+            with open(os.path.join(directory, "orders.csv"), "w", encoding="utf-8") as handle:
+                handle.write("order_id,customer_id,payment_value\nO1,C1,100\nO2,C2,200\n")
+            with open(os.path.join(directory, "customers.csv"), "w", encoding="utf-8") as handle:
+                handle.write("customer_id,customer_state\nC1,SP\nC2,RJ\n")
+
+            state = FinanceAgentGraph().run("Which states generate the most payment value?", directory)
+
+            self.assertEqual(state["status"], "completed")
+            result = state["tool_results"]["query_data"]
+            self.assertEqual(result["rows"][0]["customer_state"], "RJ")
+            self.assertEqual(result["rows"][0]["total_payment_value"], 200.0)
+            self.assertIn("Evidence:", state["recommendation"])
+            self.assertIn("Recommended action:", state["recommendation"])
+            self.assertEqual(mock_chat.call_count, 2)
+
+    def test_query_plan_rejects_unknown_columns(self):
+        catalog = {
+            "tables": [{"table_name": "orders", "columns": ["order_id", "payment_value"]}],
+            "relationships": [],
+        }
+
+        with self.assertRaises(AnalysisPlanError):
+            GenericQueryTools.validate_plan(
+                catalog,
+                {"task": "aggregation", "metric": "secret_column", "tables": ["orders"]},
+                100,
+            )
 
     def test_agent_requests_clarification_without_source(self):
         state = FinanceAgentGraph().run("Analyze my finance data")
