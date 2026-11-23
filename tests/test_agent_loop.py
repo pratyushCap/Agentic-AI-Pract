@@ -151,6 +151,17 @@ class FinanceAgentLoopTests(unittest.TestCase):
         self.assertIn("Hello", state["response"])
         self.assertEqual(state["tool_results"], {})
 
+    def test_ambiguous_capability_request_does_not_run_finance_analysis(self):
+        with patch("agents.planner_agent.llm_client.chat", side_effect=RuntimeError("offline")):
+            state = FinanceAgentGraph().run(
+                "can you help me with data engineering analyst",
+                "data/sample_finance_data.csv",
+            )
+
+        self.assertEqual(state["status"], "needs_clarification")
+        self.assertIn("what outcome", state["clarification"].lower())
+        self.assertEqual(state["tool_results"], {})
+
     def test_agent_answers_general_llm_question_without_loading_data(self):
         state = FinanceAgentGraph().run("what is llm ?", "data/sample_finance_data.csv")
 
@@ -177,6 +188,29 @@ class FinanceAgentLoopTests(unittest.TestCase):
         self.assertIn("balanced diet", state["response"])
         self.assertEqual(state["tool_results"], {})
         self.assertEqual(mock_chat.call_count, 2)
+
+    @patch(
+        "agents.planner_agent.llm_client.chat",
+        side_effect=["INTENT: GENERAL", "Here is the additional context you asked for."],
+    )
+    def test_agent_passes_recent_turns_to_intent_and_answer(self, mock_chat):
+        conversation = [
+            {"role": "user", "content": "What can you help with?"},
+            {"role": "assistant", "content": "I can help analyze finance and data."},
+        ]
+
+        state = FinanceAgentGraph().run(
+            "Please expand on that.",
+            "data/sample_finance_data.csv",
+            conversation=conversation,
+        )
+
+        self.assertIn("additional context", state["response"])
+        self.assertEqual(mock_chat.call_count, 2)
+        for call in mock_chat.call_args_list:
+            messages = call.kwargs["messages"]
+            self.assertIn(conversation[0], messages)
+            self.assertIn(conversation[1], messages)
 
     def test_agent_requests_approval_for_sensitive_action(self):
         source = self._source("transaction_amount,risk_score\n100,0.2\n")
@@ -218,6 +252,22 @@ class FinanceAgentLoopTests(unittest.TestCase):
         recommendation = state["tool_results"]["analyze_finance"]["recommendation"].lower()
         self.assertIn("profit margin is 20.00%", recommendation)
         self.assertIn("recommended action", recommendation)
+
+    def test_finance_adapter_does_not_label_losses_as_profitable(self):
+        from tools.domain_adapters import DomainAnalysisTools
+
+        result = DomainAnalysisTools.analyze_finance_profile({
+            "statistics": {
+                "summary": {
+                    "revenue": {"mean": 100.0},
+                    "profit": {"mean": -10.0},
+                    "expenses": {"mean": 110.0},
+                },
+            },
+        })
+
+        self.assertIn("loss-making", result["recommendation"])
+        self.assertNotIn("business is profitable", result["recommendation"])
 
     def test_agent_selects_portfolio_adapter(self):
         source = self._source(

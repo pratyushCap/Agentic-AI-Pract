@@ -17,11 +17,15 @@ class LLMClient:
         self.model = config.LLM_MODEL
         self.temperature = config.LLM_TEMPERATURE
         self.max_tokens = config.LLM_MAX_TOKENS
+        self.timeout = config.LLM_TIMEOUT_SECONDS
+        self.max_retries = config.LLM_MAX_RETRIES
 
         if config.LLM_API_KEY:
             self.client = OpenAI(
                 base_url=config.LLM_BASE_URL,
                 api_key=config.LLM_API_KEY,
+                timeout=self.timeout,
+                max_retries=self.max_retries,
             )
     
     def chat(
@@ -50,8 +54,8 @@ class LLMClient:
             params = {
                 "model": self.model,
                 "messages": messages,
-                "temperature": temperature or self.temperature,
-                "max_tokens": max_tokens or self.max_tokens,
+                "temperature": self.temperature if temperature is None else temperature,
+                "max_tokens": self.max_tokens if max_tokens is None else max_tokens,
             }
             
             if tools and self.model != "amazon.nova-lite-v1:0":
@@ -98,8 +102,8 @@ class LLMClient:
             params = {
                 "model": self.model,
                 "messages": messages,
-                "temperature": temperature or self.temperature,
-                "max_tokens": max_tokens or self.max_tokens,
+                "temperature": self.temperature if temperature is None else temperature,
+                "max_tokens": self.max_tokens if max_tokens is None else max_tokens,
                 "stream": True
             }
             

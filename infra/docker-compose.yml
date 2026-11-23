@@ -1,10 +1,28 @@
-version: '3.9'
 services:
   app:
-    build: .
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
     ports:
       - "8000:8000"
-    volumes:
-      - ..:/app
     environment:
-      - LLM_API_KEY=${LLM_API_KEY}
+      ENVIRONMENT: production
+      API_AUTH_REQUIRED: "true"
+      API_KEY: ${API_KEY:?Set API_KEY before starting the production container}
+      LLM_API_KEY: ${LLM_API_KEY:?Set LLM_API_KEY before starting the production container}
+      AGENT_STATE_DB: /app/state/agent_state.sqlite3
+      DATA_ROOT: /app/data
+    volumes:
+      - agent_state:/app/state
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  agent_state:

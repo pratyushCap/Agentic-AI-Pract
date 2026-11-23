@@ -11,11 +11,7 @@ class Config:
     LLM_MODEL = os.getenv("LLM_MODEL", "amazon.nova-lite-v1:0")
     LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", 0.7))
     LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", 2048))
+    LLM_TIMEOUT_SECONDS = float(os.getenv("LLM_TIMEOUT_SECONDS", 30))
+    LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", 2))
     
-    # Validation
-    if not LLM_API_KEY:
-        raise SystemExit(
-            "Error: LLM_API_KEY is not set. Add it to your .env file."
-        )
-
 config = Config()

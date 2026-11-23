@@ -11,6 +11,8 @@ __pycache__/
 data/*
 !data/.gitkeep
 !data/sample_finance_data.csv
+state/
+*.sqlite3
 test_results.txt
 
 # Logs and local tooling state

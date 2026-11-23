@@ -38,17 +38,23 @@ class DomainAnalysisTools:
                 "status": "incomplete",
                 "recommendation": "Finance analysis is incomplete because revenue, profit, or expenses are missing.",
             }
+        margin = profit / revenue * 100
+        expense_ratio = expenses / revenue * 100
+        profitability = "profitable" if profit > 0 else "loss-making" if profit < 0 else "at break-even"
+        interpretation = (
+            f"The business is {profitability}; expenses are {expense_ratio:.2f}% of average revenue."
+        )
         return {
             "status": "success",
             "average_revenue": revenue,
             "average_profit": profit,
             "average_expenses": expenses,
-            "profit_margin": round(profit / revenue * 100, 2),
-            "expense_ratio": round(expenses / revenue * 100, 2),
+            "profit_margin": round(margin, 2),
+            "expense_ratio": round(expense_ratio, 2),
             "recommendation": (
                 f"Evidence: average revenue is ${revenue:,.2f}, average profit is ${profit:,.2f}, "
-                f"profit margin is {profit / revenue * 100:.2f}%, and expense ratio is {expenses / revenue * 100:.2f}%.\n"
-                "Interpretation: the business is profitable, but expenses consume a significant share of revenue.\n"
+                f"profit margin is {margin:.2f}%, and expense ratio is {expense_ratio:.2f}%.\n"
+                f"Interpretation: {interpretation}\n"
                 "Recommended action: review major cost drivers before approving new investments or cost changes."
             ),
         }

@@ -24,10 +24,19 @@ class FinanceAgentGraph:
         request: str,
         source: Optional[Union[str, List[str]]] = None,
         max_steps: int = 8,
+        conversation: Optional[List[Dict[str, str]]] = None,
     ) -> AgentState:
+        conversation_context = [
+            {"role": message["role"], "content": message["content"]}
+            for message in (conversation or [])
+            if isinstance(message, dict)
+            and message.get("role") in {"user", "assistant"}
+            and isinstance(message.get("content"), str)
+        ][-12:]
         state: AgentState = {
             "request": request,
             "source": source,
+            "conversation": conversation_context,
             "goal": request.strip(),
             "plan": self.planner.create_plan(request),
             "current_step": "",

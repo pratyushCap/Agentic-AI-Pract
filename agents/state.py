@@ -7,6 +7,7 @@ AgentStatus = Literal["running", "completed", "needs_clarification", "approval_r
 class AgentState(TypedDict, total=False):
     request: str
     source: Any
+    conversation: List[Dict[str, str]]
     goal: str
     plan: List[str]
     current_step: str

@@ -1,42 +1,149 @@
-from typing import Dict, List, Optional, Union
+import hmac
+import json
 import os
+import uuid
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, List, Literal, Optional, Union
 
-from fastapi import FastAPI, Depends, HTTPException, status, Security
+from fastapi import Depends, FastAPI, HTTPException, Security, status
 from fastapi.security.api_key import APIKeyHeader
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
 from agents.graph import FinanceAgentGraph
+from utils.state_store import AgentStateStore, SessionOwnershipError
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DATA_ROOT = Path(os.getenv("DATA_ROOT", str(PROJECT_ROOT / "data")))
+if not DATA_ROOT.is_absolute():
+    DATA_ROOT = PROJECT_ROOT / DATA_ROOT
+DATA_ROOT = DATA_ROOT.resolve()
+STATE_DATABASE = Path(os.getenv("AGENT_STATE_DB", str(PROJECT_ROOT / "state" / "agent_state.sqlite3")))
+if not STATE_DATABASE.is_absolute():
+    STATE_DATABASE = PROJECT_ROOT / STATE_DATABASE
 
 app = FastAPI(
     title="Finance Agent",
     description="Bounded LangGraph finance agent with domain analysis, approvals, and audit tracing.",
-    version="0.1.0",
+    version="0.2.0",
 )
 
 agent = FinanceAgentGraph()
+state_store = AgentStateStore(STATE_DATABASE)
 
-# Optional API key protection: set environment variable API_KEY to enable
 API_KEY = os.getenv("API_KEY", "")
+auth_required_setting = os.getenv("API_AUTH_REQUIRED")
+API_AUTH_REQUIRED = (
+    auth_required_setting.lower() in {"1", "true", "yes"}
+    if auth_required_setting is not None
+    else os.getenv("ENVIRONMENT", "development").lower() == "production"
+)
 api_key_header = APIKeyHeader(name="X-API-KEY", auto_error=False)
 
 
-def get_api_key(api_key: Optional[str] = Security(api_key_header)) -> Optional[str]:
-    if not API_KEY:
-        return None
-    if api_key == API_KEY:
-        return api_key
+@dataclass(frozen=True)
+class AuthenticatedPrincipal:
+    principal_id: str
+    role: str
+    data_root: Path
+
+
+def _configured_credentials() -> List[Dict[str, str]]:
+    configured = os.getenv("API_KEYS_JSON", "")
+    if configured:
+        credentials = json.loads(configured)
+        if not isinstance(credentials, list):
+            raise ValueError("API_KEYS_JSON must be a JSON list.")
+        normalized = []
+        for item in credentials:
+            if not isinstance(item, dict):
+                raise ValueError("Each API_KEYS_JSON entry must be an object.")
+            key = item.get("key")
+            principal_id = item.get("principal_id")
+            role = item.get("role")
+            if not all(isinstance(value, str) and value for value in (key, principal_id, role)):
+                raise ValueError("API key entries require non-empty key, principal_id, and role.")
+            if role not in {"viewer", "analyst", "admin"}:
+                raise ValueError("API key role must be viewer, analyst, or admin.")
+            root = Path(item.get("data_root", str(DATA_ROOT)))
+            if not root.is_absolute():
+                root = DATA_ROOT / root
+            try:
+                root = root.resolve(strict=True)
+                root.relative_to(DATA_ROOT)
+            except (OSError, ValueError) as exc:
+                raise ValueError("Each API key data_root must exist inside DATA_ROOT.") from exc
+            normalized.append({
+                "key": key,
+                "principal_id": principal_id,
+                "role": role,
+                "data_root": str(root),
+            })
+        return normalized
+    if API_KEY:
+        return [{
+            "key": API_KEY,
+            "principal_id": "default",
+            "role": "analyst",
+            "data_root": str(DATA_ROOT),
+        }]
+    return []
+
+
+API_CREDENTIALS = _configured_credentials()
+
+
+def get_api_key(api_key: Optional[str] = Security(api_key_header)) -> AuthenticatedPrincipal:
+    if not API_CREDENTIALS:
+        if API_AUTH_REQUIRED:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="API authentication is required but no API credentials are configured.",
+            )
+        return AuthenticatedPrincipal("local", "admin", DATA_ROOT)
+    if api_key is not None:
+        for credential in API_CREDENTIALS:
+            if hmac.compare_digest(api_key, credential["key"]):
+                return AuthenticatedPrincipal(
+                    principal_id=credential["principal_id"],
+                    role=credential["role"],
+                    data_root=Path(credential["data_root"]),
+                )
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Invalid or missing API Key",
     )
 
 
+class ConversationTurn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=8000)
+
+
 class WorkflowRequest(BaseModel):
-    prompt: str
+    model_config = ConfigDict(extra="forbid")
+
+    prompt: str = Field(min_length=1, max_length=4000)
     source: Optional[Union[str, List[str]]] = None
+    session_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    conversation: List[ConversationTurn] = Field(default_factory=list, max_length=24)
+
+    @field_validator("prompt")
+    @classmethod
+    def strip_prompt(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Prompt must not be blank.")
+        return value
 
 
 class WorkflowResponse(BaseModel):
     request: str
+    session_id: str
+    run_id: str
     status: str
     step_count: int
     max_steps: int
@@ -45,24 +152,112 @@ class WorkflowResponse(BaseModel):
     clarification: Optional[str] = None
     approval_required: bool = False
     approval_status: str = "not_required"
-    findings: List[str] = []
-    errors: List[str] = []
-    observations: List[Dict[str, object]] = []
-    tool_results: Dict[str, object] = {}
-    audit_events: List[Dict[str, object]] = []
+    findings: List[str] = Field(default_factory=list)
+    errors: List[str] = Field(default_factory=list)
+    observations: List[Dict[str, object]] = Field(default_factory=list)
+    tool_results: Dict[str, object] = Field(default_factory=dict)
+    audit_events: List[Dict[str, object]] = Field(default_factory=list)
+
+
+def _resolve_api_source(
+    source: Optional[Union[str, List[str]]],
+    allowed_root: Path,
+) -> Union[str, List[str]]:
+    requested_sources = source or str(allowed_root / "sample_finance_data.csv")
+    sources = requested_sources if isinstance(requested_sources, list) else [requested_sources]
+    resolved_sources = []
+    for source_path in sources:
+        candidate = Path(source_path)
+        if not candidate.is_absolute():
+            if candidate.parts and candidate.parts[0] == allowed_root.name:
+                candidate = Path(*candidate.parts[1:])
+            candidate = allowed_root / candidate
+        try:
+            resolved = candidate.resolve(strict=True)
+            resolved.relative_to(allowed_root)
+        except (OSError, ValueError):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Source must exist inside the configured DATA_ROOT.",
+            )
+        if not resolved.is_file() and not resolved.is_dir():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Source must be a file or directory.",
+            )
+        resolved_sources.append(str(resolved))
+    return resolved_sources if isinstance(requested_sources, list) else resolved_sources[0]
+
+
+def _assistant_message(result: Dict[str, object]) -> str:
+    for key in ("response", "clarification", "recommendation"):
+        value = result.get(key)
+        if isinstance(value, str) and value:
+            return value
+    errors = result.get("errors", [])
+    return "; ".join(errors) if isinstance(errors, list) else ""
 
 
 @app.post("/workflow", response_model=WorkflowResponse)
-def run_workflow(request: WorkflowRequest, api_key: Optional[str] = Depends(get_api_key)):
-    result = agent.run(
-        request.prompt,
-        request.source or "data/sample_finance_data.csv",
+def run_workflow(
+    request: WorkflowRequest,
+    principal: AuthenticatedPrincipal = Depends(get_api_key),
+):
+    if principal.role not in {"analyst", "admin"}:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="This role cannot run analyses.")
+    session_id = request.session_id or uuid.uuid4().hex
+    principal_id = principal.principal_id
+    try:
+        stored_conversation = state_store.load_conversation(session_id, principal_id)
+    except SessionOwnershipError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    conversation = (
+        stored_conversation
+        if stored_conversation is not None
+        else [turn.model_dump() for turn in request.conversation]
     )
-    return WorkflowResponse(**result)
+    source = _resolve_api_source(request.source, principal.data_root)
+    result = agent.run(request.prompt, source, conversation=conversation)
+
+    run_id = uuid.uuid4().hex
+    try:
+        state_store.save_workflow(
+            run_id=run_id,
+            session_id=session_id,
+            principal_id=principal_id,
+            request=request.prompt,
+            status=str(result["status"]),
+            audit_events=result.get("audit_events", []),
+            conversation=conversation,
+            assistant_message=_assistant_message(result),
+        )
+    except SessionOwnershipError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    response = dict(result)
+    response["session_id"] = session_id
+    response["run_id"] = run_id
+    return WorkflowResponse(**response)
+
+
+@app.get("/sessions/{session_id}/runs")
+def session_runs(
+    session_id: str,
+    principal: AuthenticatedPrincipal = Depends(get_api_key),
+):
+    try:
+        return {"session_id": session_id, "runs": state_store.load_runs(session_id, principal.principal_id)}
+    except SessionOwnershipError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
 
 
 @app.get("/samples")
-def workflow_samples():
+def workflow_samples(principal: AuthenticatedPrincipal = Depends(get_api_key)):
     """Return example prompts clients can use to exercise the workflow."""
     samples = [
         "Summarize the latest financial dataset",
@@ -73,5 +268,5 @@ def workflow_samples():
     ]
     return {
         "samples": samples,
-        "note": "The endpoint runs the LangGraph Finance Agent. If API_KEY is set, include header X-API-KEY.",
+        "note": "The endpoint uses the bounded LangGraph agent. Include X-API-KEY when API_KEY is configured.",
     }
