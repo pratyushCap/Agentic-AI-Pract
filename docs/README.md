@@ -32,8 +32,13 @@ The current milestone is a local-file analysis prototype. It is not a trading/ac
 - `GET /health` is an unauthenticated liveness check.
 - `GET /samples` returns example prompts.
 - `GET /sessions/{session_id}/runs` returns persisted run/audit records for the authenticated principal's session.
+- `GET /approvals` lists approval requests for admins; an optional `status` filter accepts `pending`, `approved`, `rejected`, or `expired`.
+- `GET /approvals/{approval_id}` lets the requester or an admin read the approval record.
+- `POST /approvals/{approval_id}/decision` lets an admin record an `approved` or `rejected` decision and optional note.
 
 Authentication is optional only for local development. Set `API_KEY` to protect an instance with one analyst credential. For multiple principals and roles, set `API_KEYS_JSON` to a JSON list of objects with `key`, `principal_id`, `role` (`viewer`, `analyst`, or `admin`), and optional `data_root` inside `DATA_ROOT`. Sessions are isolated by principal; viewers may read samples and their own run history but cannot run analyses. In `ENVIRONMENT=production`, authentication is required and requests fail closed if credentials are missing or invalid.
+
+Sensitive requests pause with `approval_status: "pending"` and include an `approval_id`. Approval requests expire after 24 hours; expiration is evaluated when approval records are listed, read, or decided (there is no background expiry worker). An `admin` principal other than the requester must record the decision; configure a separate admin credential in `API_KEYS_JSON` for this purpose. Decisions and expiration are appended to the approval and run audit records. Approval records are governance gates only: **even an approved request does not execute or resume a financial action**. This prototype has no write-capable action tools or resumable action executor.
 
 ## Agent Responsibilities
 
@@ -118,7 +123,7 @@ It should select connected tables, execute a bounded read-only analysis, cite th
 
 ## Deliberate non-goals and remaining production work
 
-- Tools are read-only. A request to trade, rebalance, send, or update is paused for approval, but there is no action executor or resumable approval workflow. Do not add one without a separately designed policy and human-approval process.
+- Tools are read-only. Sensitive requests are persisted as approval records with pending, approved, rejected, and expired states; independent admins can decide and the lifecycle is audited. Approval does not execute or resume an action. Do not add write-capable tools without a separately designed policy, action-specific authorization, and resumable execution lifecycle.
 - SQLite persistence is suitable for a single-instance prototype. It is not encrypted by the application, not a multi-replica coordination layer, and does not replace managed PostgreSQL/Redis for production scale. Protect the volume, back it up, and plan a migration before handling sensitive production records.
 - `API_KEYS_JSON` provides simple application roles and per-principal source roots, not an enterprise identity provider, key rotation service, rate limiting, or fine-grained business authorization.
 - Data is selected from a server-side data directory; this release does not provide an upload endpoint or a database connector. Do not mount untrusted files into `DATA_ROOT`.

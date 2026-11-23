@@ -95,6 +95,55 @@ class ApiBoundaryTests(unittest.TestCase):
         self.assertEqual(len(runs), 2)
         self.assertEqual(runs[0]["status"], "completed")
 
+    def test_approval_is_persisted_and_requires_an_independent_admin(self):
+        class FakeAgent:
+            def run(self, prompt, source, conversation):
+                return {
+                    "request": prompt,
+                    "status": "approval_required",
+                    "step_count": 1,
+                    "max_steps": 8,
+                    "recommendation": "Review the proposed rebalance.",
+                    "approval_required": True,
+                    "approval_status": "pending",
+                    "audit_events": [{"event_type": "agent_finished"}],
+                }
+
+        database = self.root / "approvals.sqlite3"
+        store = AgentStateStore(database)
+        reviewer = api.AuthenticatedPrincipal("reviewer-1", "admin", self.root)
+        with patch.object(api, "state_store", store), patch.object(api, "agent", FakeAgent()):
+            result = api.run_workflow(
+                api.WorkflowRequest(prompt="Rebalance the portfolio", source="sample.csv"),
+                self.principal,
+            )
+
+            self.assertIsNotNone(result.approval_id)
+            self.assertEqual(result.approval_status, "pending")
+            self.assertFalse(result.action_executed)
+            self.assertEqual(
+                api.approval_request(result.approval_id, self.principal)["status"],
+                "pending",
+            )
+            with self.assertRaises(HTTPException) as raised:
+                api.approval_requests(principal=self.principal)
+            self.assertEqual(raised.exception.status_code, 403)
+
+            decision = api.decide_approval(
+                result.approval_id,
+                api.ApprovalDecisionRequest(
+                    decision="approved",
+                    note="Independent review complete.",
+                ),
+                reviewer,
+            )
+
+            self.assertEqual(decision["status"], "approved")
+            self.assertFalse(decision["action_executed"])
+            self.assertIn("No action was executed", decision["message"])
+            runs = store.load_runs(result.session_id, self.principal.principal_id)
+            self.assertEqual(runs[0]["audit_events"][-1]["event_type"], "approval_approved")
+
 
 if __name__ == "__main__":
     unittest.main()

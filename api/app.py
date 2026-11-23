@@ -6,12 +6,19 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Literal, Optional, Union
 
-from fastapi import Depends, FastAPI, HTTPException, Security, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Security, status
 from fastapi.security.api_key import APIKeyHeader
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from agents.graph import FinanceAgentGraph
-from utils.state_store import AgentStateStore, SessionOwnershipError
+from utils.audit import record_event
+from utils.state_store import (
+    AgentStateStore,
+    ApprovalNotFoundError,
+    ApprovalSelfDecisionError,
+    ApprovalStateError,
+    SessionOwnershipError,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -152,11 +159,20 @@ class WorkflowResponse(BaseModel):
     clarification: Optional[str] = None
     approval_required: bool = False
     approval_status: str = "not_required"
+    approval_id: Optional[str] = None
+    action_executed: bool = False
     findings: List[str] = Field(default_factory=list)
     errors: List[str] = Field(default_factory=list)
     observations: List[Dict[str, object]] = Field(default_factory=list)
     tool_results: Dict[str, object] = Field(default_factory=dict)
     audit_events: List[Dict[str, object]] = Field(default_factory=list)
+
+
+class ApprovalDecisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["approved", "rejected"]
+    note: Optional[str] = Field(default=None, max_length=2000)
 
 
 def _resolve_api_source(
@@ -220,6 +236,19 @@ def run_workflow(
     result = agent.run(request.prompt, source, conversation=conversation)
 
     run_id = uuid.uuid4().hex
+    approval_record = None
+    if result["status"] == "approval_required":
+        approval_id = uuid.uuid4().hex
+        approval_record = {
+            "approval_id": approval_id,
+            "recommendation": str(result.get("recommendation") or ""),
+        }
+        record_event(
+            result["audit_events"],
+            "approval_requested",
+            approval_id=approval_id,
+            requester_id=principal_id,
+        )
     try:
         state_store.save_workflow(
             run_id=run_id,
@@ -230,6 +259,7 @@ def run_workflow(
             audit_events=result.get("audit_events", []),
             conversation=conversation,
             assistant_message=_assistant_message(result),
+            approval=approval_record,
         )
     except SessionOwnershipError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
@@ -237,7 +267,74 @@ def run_workflow(
     response = dict(result)
     response["session_id"] = session_id
     response["run_id"] = run_id
+    response["approval_id"] = approval_record["approval_id"] if approval_record else None
+    response["action_executed"] = False
     return WorkflowResponse(**response)
+
+
+def _require_admin(principal: AuthenticatedPrincipal) -> None:
+    if principal.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This role cannot manage approval requests.",
+        )
+
+
+@app.get("/approvals")
+def approval_requests(
+    status_filter: Optional[Literal["pending", "approved", "rejected", "expired"]] = Query(
+        default=None,
+        alias="status",
+    ),
+    principal: AuthenticatedPrincipal = Depends(get_api_key),
+):
+    _require_admin(principal)
+    return {"approvals": state_store.list_approvals(status_filter)}
+
+
+@app.get("/approvals/{approval_id}")
+def approval_request(
+    approval_id: str,
+    principal: AuthenticatedPrincipal = Depends(get_api_key),
+):
+    approval = state_store.get_approval(approval_id)
+    if approval is None or (
+        principal.role != "admin" and approval["requester_id"] != principal.principal_id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Approval request not found.",
+        )
+    return approval
+
+
+@app.post("/approvals/{approval_id}/decision")
+def decide_approval(
+    approval_id: str,
+    request: ApprovalDecisionRequest,
+    principal: AuthenticatedPrincipal = Depends(get_api_key),
+):
+    _require_admin(principal)
+    try:
+        approval = state_store.decide_approval(
+            approval_id,
+            decided_by=principal.principal_id,
+            decision=request.decision,
+            note=request.note,
+        )
+    except ApprovalNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ApprovalSelfDecisionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except ApprovalStateError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    return {
+        **approval,
+        "message": (
+            "Approval recorded. No action was executed; this prototype has no "
+            "write-capable action tools."
+        ),
+    }
 
 
 @app.get("/sessions/{session_id}/runs")

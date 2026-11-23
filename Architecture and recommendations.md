@@ -548,10 +548,11 @@ Conditional edges should support:
 
 #### Phase 4: Governance and Human Approval
 
-- add policy rules for finance and portfolio actions
-- add approval records with pending, approved, rejected, and expired states
-- pause the graph for human approval before sensitive actions
-- prevent the agent from approving its own recommendation
+- [x] Persist approval records with pending, approved, rejected, and expired states; pending requests expire after 24 hours.
+- [x] Pause sensitive requests at the approval-required graph outcome and expose API endpoints for requesters and admins.
+- [x] Require an admin principal other than the requester to decide; record decisions and expiration in approval and run audit records.
+- [ ] Add deployment-specific policy rules for finance and portfolio actions.
+- [ ] Add a resumable action executor only after action-specific policy and authorization are designed. Approval currently records a decision only and never executes an action.
 
 #### Phase 5: Memory and Production Services
 
