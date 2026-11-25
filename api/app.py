@@ -4,7 +4,7 @@ import os
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Literal, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Union
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Security, status
 from fastapi.security.api_key import APIKeyHeader
@@ -214,6 +214,105 @@ def _assistant_message(result: Dict[str, object]) -> str:
     return "; ".join(errors) if isinstance(errors, list) else ""
 
 
+def _public_tool_results(tool_results: object) -> Dict[str, object]:
+    if not isinstance(tool_results, dict):
+        return {}
+    public_results: Dict[str, object] = {}
+    analysis_fields = {
+        "status",
+        "average_revenue",
+        "average_profit",
+        "average_expenses",
+        "profit_margin",
+        "expense_ratio",
+        "average_transaction_amount",
+        "average_risk_score",
+        "average_exposure",
+        "largest_exposure",
+        "missing_values",
+        "recommendation",
+    }
+    for tool_name in ("analyze_finance", "analyze_transactions", "analyze_portfolio"):
+        result = tool_results.get(tool_name)
+        if isinstance(result, dict):
+            public_results[tool_name] = {
+                key: value for key, value in result.items() if key in analysis_fields
+            }
+
+    query_result = tool_results.get("query_data")
+    if isinstance(query_result, dict):
+        public_query: Dict[str, object] = {
+            key: query_result[key]
+            for key in ("status", "tables_used", "rows", "row_count", "truncated", "recommendation")
+            if key in query_result
+        }
+        plan = query_result.get("plan")
+        if isinstance(plan, dict):
+            public_query["plan"] = {
+                key: plan[key]
+                for key in ("task", "metric", "aggregation", "group_by", "date_column", "tables", "limit")
+                if key in plan
+            }
+        public_results["query_data"] = public_query
+    return public_results
+
+
+def _public_audit_events(events: object) -> List[Dict[str, object]]:
+    if not isinstance(events, list):
+        return []
+    public_events = []
+    event_fields = {"timestamp", "event_type", "decision", "tool", "step_count", "status"}
+    summary_fields = {"status", "domain", "file_count", "rows"}
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        public_event = {
+            key: event[key]
+            for key in event_fields
+            if key in event
+        }
+        summary = event.get("result_summary")
+        if isinstance(summary, dict):
+            public_event["result_summary"] = {
+                key: summary[key]
+                for key in summary_fields
+                if key in summary and isinstance(summary[key], (str, int, float, bool, type(None)))
+            }
+        public_events.append(public_event)
+    return public_events
+
+
+def _redact_local_paths(value: Any, data_root: Path) -> Any:
+    if isinstance(value, dict):
+        return {key: _redact_local_paths(item, data_root) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redact_local_paths(item, data_root) for item in value]
+    if isinstance(value, str):
+        redacted = value
+        for root in {str(data_root), str(data_root).replace("\\", "/")}:
+            redacted = redacted.replace(root, "<DATA_ROOT>")
+        return redacted
+    return value
+
+
+def _public_run_history(runs: object, data_root: Path) -> List[Dict[str, object]]:
+    if not isinstance(runs, list):
+        return []
+    public_runs = []
+    for run in runs:
+        if not isinstance(run, dict):
+            continue
+        public_run = {
+            key: run[key]
+            for key in ("run_id", "request", "status", "created_at")
+            if key in run
+        }
+        safe_events = _public_audit_events(run.get("audit_events"))
+        public_run["audit_events"] = _redact_local_paths(safe_events, data_root)
+        public_runs.append(_redact_local_paths(public_run, data_root))
+    return public_runs
+
+
 @app.post("/workflow", response_model=WorkflowResponse)
 def run_workflow(
     request: WorkflowRequest,
@@ -265,6 +364,9 @@ def run_workflow(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
     response = dict(result)
+    response["tool_results"] = _public_tool_results(result.get("tool_results"))
+    response["audit_events"] = _public_audit_events(result.get("audit_events"))
+    response = _redact_local_paths(response, principal.data_root)
     response["session_id"] = session_id
     response["run_id"] = run_id
     response["approval_id"] = approval_record["approval_id"] if approval_record else None
@@ -343,7 +445,11 @@ def session_runs(
     principal: AuthenticatedPrincipal = Depends(get_api_key),
 ):
     try:
-        return {"session_id": session_id, "runs": state_store.load_runs(session_id, principal.principal_id)}
+        runs = state_store.load_runs(session_id, principal.principal_id)
+        return {
+            "session_id": session_id,
+            "runs": _public_run_history(runs, principal.data_root),
+        }
     except SessionOwnershipError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 

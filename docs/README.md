@@ -40,6 +40,8 @@ Authentication is optional only for local development. Set `API_KEY` to protect 
 
 Sensitive requests pause with `approval_status: "pending"` and include an `approval_id`. Approval requests expire after 24 hours; expiration is evaluated when approval records are listed, read, or decided (there is no background expiry worker). An `admin` principal other than the requester must record the decision; configure a separate admin credential in `API_KEYS_JSON` for this purpose. Decisions and expiration are appended to the approval and run audit records. Approval records are governance gates only: **even an approved request does not execute or resume a financial action**. This prototype has no write-capable action tools or resumable action executor.
 
+API responses intentionally omit dataset load/profile payloads (including row previews, retained records, and full source paths). They retain domain metrics and bounded results from validated generic queries. Run-history responses expose a filtered audit summary rather than raw stored event payloads. The local CLI may still show source previews for development; do not treat it as a safe interface for sensitive data.
+
 ## Agent Responsibilities
 
 - `Finance Analyst` — evaluates investments, recommends finance actions, and validates outcomes

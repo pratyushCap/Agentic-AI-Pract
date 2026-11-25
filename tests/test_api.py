@@ -2,6 +2,7 @@ import tempfile
 import unittest
 from importlib import import_module
 from pathlib import Path
+import json
 from unittest.mock import patch
 
 from fastapi import HTTPException
@@ -67,7 +68,18 @@ class ApiBoundaryTests(unittest.TestCase):
                     "step_count": 1,
                     "max_steps": 8,
                     "response": "The dataset contains one row.",
-                    "audit_events": [{"event_type": "agent_finished", "status": "completed"}],
+                    "tool_results": {
+                        "load_dataset": {
+                            "status": "success",
+                            "rows": 1,
+                            "data": [{"customer_name": "PRIVATE CUSTOMER"}],
+                            "records": [{"customer_name": "PRIVATE CUSTOMER"}],
+                        },
+                    },
+                    "audit_events": [
+                        {"event_type": "agent_started", "source": source},
+                        {"event_type": "agent_finished", "status": "completed"},
+                    ],
                 }
 
         database = self.root / "agent.sqlite3"
@@ -87,6 +99,7 @@ class ApiBoundaryTests(unittest.TestCase):
                     self.principal,
                 )
                 runs = api.state_store.load_runs(first.session_id, self.principal.principal_id)
+                public_runs = api.session_runs(first.session_id, self.principal)
 
         self.assertEqual(first.session_id, second.session_id)
         self.assertEqual(fake_agent.conversations[0], [])
@@ -94,6 +107,68 @@ class ApiBoundaryTests(unittest.TestCase):
         self.assertEqual(fake_agent.conversations[1][-1]["content"], "The dataset contains one row.")
         self.assertEqual(len(runs), 2)
         self.assertEqual(runs[0]["status"], "completed")
+        serialized_response = json.dumps(first.model_dump())
+        self.assertNotIn(str(self.data_file), serialized_response)
+        self.assertNotIn("PRIVATE CUSTOMER", serialized_response)
+        self.assertEqual(first.tool_results, {})
+        self.assertNotIn(str(self.data_file), json.dumps(public_runs))
+        self.assertNotIn("PRIVATE CUSTOMER", json.dumps(public_runs))
+
+    def test_workflow_exposes_bounded_query_evidence_without_source_previews(self):
+        class FakeAgent:
+            def run(self, prompt, source, conversation):
+                return {
+                    "request": prompt,
+                    "status": "completed",
+                    "step_count": 2,
+                    "max_steps": 8,
+                    "recommendation": "SP generated total payment value 100.",
+                    "findings": ["SP generated total payment value 100."],
+                    "tool_results": {
+                        "load_dataset": {
+                            "data": [{"customer_name": "PRIVATE CUSTOMER"}],
+                        },
+                        "profile_dataset": {
+                            "tables": [{
+                                "source": source,
+                                "preview": [{"customer_name": "PRIVATE CUSTOMER"}],
+                            }],
+                        },
+                        "query_data": {
+                            "status": "success",
+                            "query": f"SELECT * FROM '{source}'",
+                            "tables_used": ["payments"],
+                            "rows": [{"customer_state": "SP", "total_payment_value": 100.0}],
+                            "row_count": 1,
+                            "truncated": False,
+                            "plan": {
+                                "task": "aggregation",
+                                "metric": "payment_value",
+                                "group_by": "customer_state",
+                                "tables": ["payments"],
+                                "filters": [{"column": "customer_email", "value": "private@example.test"}],
+                            },
+                        },
+                    },
+                    "audit_events": [{"event_type": "agent_started", "source": source}],
+                }
+
+        with patch.object(api, "agent", FakeAgent()):
+            result = api.run_workflow(
+                api.WorkflowRequest(prompt="Which state has the most payment value?", source="sample.csv"),
+                self.principal,
+            )
+
+        serialized = json.dumps(result.model_dump())
+        self.assertNotIn(str(self.data_file), serialized)
+        self.assertNotIn("PRIVATE CUSTOMER", serialized)
+        self.assertNotIn("private@example.test", serialized)
+        self.assertNotIn("SELECT", serialized)
+        self.assertEqual(
+            result.tool_results["query_data"]["rows"],
+            [{"customer_state": "SP", "total_payment_value": 100.0}],
+        )
+        self.assertNotIn("filters", result.tool_results["query_data"]["plan"])
 
     def test_approval_is_persisted_and_requires_an_independent_admin(self):
         class FakeAgent:
